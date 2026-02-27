@@ -1,0 +1,27 @@
+# Ignore heavy or proprietary artifacts
+work/
+extracted/
+artifacts/
+samples/
+notes/
+build/
+dist/
+dist_smoke/
+
+# Tool outputs
+*.log
+*.tmp
+*.bak
+*.pyc
+__pycache__/
+tools/__pycache__/
+tools/bin/
+
+# Common archive dump patterns
+*_chunk/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
