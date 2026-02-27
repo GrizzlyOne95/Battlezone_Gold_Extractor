@@ -1,5 +1,6 @@
 
-<img width="1920" height="1032" alt="BattlezoneGoldExtractor_SERzIckWcN" src="https://github.com/user-attachments/assets/491e44ca-087a-411b-a51f-e3a33c0e9495" />
+<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/b4de9d54-479b-49d2-bce4-82d217d5f91d" />
+
 
 # Battlezone_Gold_Extractor
 Extracts the previously unknown proprietary models, textures, and audio from Battlezone Gold (Asura Engine)
