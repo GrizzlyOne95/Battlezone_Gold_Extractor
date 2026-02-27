@@ -1,6 +1,5 @@
-<<<<<<< HEAD
 
-<img width="2048" height="512" alt="bz_cinematic_07_outro" src="https://github.com/user-attachments/assets/c84e324a-9922-459f-a7f6-15c05472fa6c" />
+<img width="1920" height="1032" alt="BattlezoneGoldExtractor_SERzIckWcN" src="https://github.com/user-attachments/assets/491e44ca-087a-411b-a51f-e3a33c0e9495" />
 
 # Battlezone_Gold_Extractor
 Extracts the previously unknown proprietary models, textures, and audio from Battlezone Gold (Asura Engine)
