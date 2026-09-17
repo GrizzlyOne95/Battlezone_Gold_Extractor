@@ -18,7 +18,10 @@ param(
     [switch]$BundleRuntimeBin = $true,
 
     [Parameter(Mandatory = $false)]
-    [switch]$BundleBms = $true
+    [switch]$BundleBms = $true,
+
+    [Parameter(Mandatory = $false)]
+    [string]$VersionFile = ""
 )
 
 Set-StrictMode -Version Latest
@@ -130,6 +133,14 @@ $toolsRoot = $scriptRoot
 $distAbs = Resolve-PathFromBase -PathValue $DistDir -BasePath $repoRoot
 $buildAbs = Resolve-PathFromBase -PathValue $BuildDir -BasePath $repoRoot
 
+$versionFileAbs = $null
+if (-not [string]::IsNullOrWhiteSpace($VersionFile)) {
+    $versionFileAbs = Resolve-PathFromBase -PathValue $VersionFile -BasePath $repoRoot
+    if (-not (Test-Path -LiteralPath $versionFileAbs)) {
+        throw "VersionFile does not exist: $versionFileAbs"
+    }
+}
+
 if (-not (Test-Path -LiteralPath $distAbs)) {
     New-Item -ItemType Directory -Force -Path $distAbs | Out-Null
 }
@@ -143,7 +154,7 @@ if ($pyiVersionRc -ne 0) {
     throw "PyInstaller not found for '$PythonExe'. Install with: pip install pyinstaller"
 }
 
-# Build helper console executables (always onefile).
+# Build helper console executables (always onefile). These names are internal runtime contracts.
 Invoke-PyInstallerBuild -EntryScript (Join-Path $toolsRoot "bzg-extractor.py") -Name "bzg-extractor" -DistPath $distAbs -BuildPath $buildAbs -WindowedBuild:$false -OneFileBuild
 Invoke-PyInstallerBuild -EntryScript (Join-Path $toolsRoot "extract-asura-native.py") -Name "extract-asura-native" -DistPath $distAbs -BuildPath $buildAbs -WindowedBuild:$false -OneFileBuild
 Invoke-PyInstallerBuild -EntryScript (Join-Path $toolsRoot "export-hskn-obj-candidates.py") -Name "export-hskn-obj-candidates" -DistPath $distAbs -BuildPath $buildAbs -WindowedBuild:$false -OneFileBuild
@@ -157,6 +168,16 @@ $helperExes = @(
 )
 
 $uiExtraArgs = @()
+$iconPath = Join-Path -Path $repoRoot -ChildPath "icon.ico"
+if (Test-Path -LiteralPath $iconPath) {
+    $uiExtraArgs += "--icon"
+    $uiExtraArgs += $iconPath
+}
+if ($null -ne $versionFileAbs) {
+    $uiExtraArgs += "--version-file"
+    $uiExtraArgs += $versionFileAbs
+}
+
 if ($OneFile) {
     foreach ($exeName in $helperExes) {
         $src = Join-Path -Path $distAbs -ChildPath $exeName
@@ -198,10 +219,10 @@ if ($OneFile) {
     }
 }
 
-# Build UI executable.
+# Build public UI executable.
 Invoke-PyInstallerBuild `
     -EntryScript (Join-Path $toolsRoot "bzg-extractor-ui.py") `
-    -Name "BattlezoneGoldExtractor" `
+    -Name "BZGoldExtractor" `
     -DistPath $distAbs `
     -BuildPath $buildAbs `
     -WindowedBuild:$Windowed `
@@ -212,7 +233,7 @@ $bundleRoot = if ($OneFile) {
     $distAbs
 }
 else {
-    Join-Path -Path $distAbs -ChildPath "BattlezoneGoldExtractor"
+    Join-Path -Path $distAbs -ChildPath "BZGoldExtractor"
 }
 
 if (-not (Test-Path -LiteralPath $bundleRoot)) {
@@ -268,7 +289,7 @@ else {
             Remove-Item -LiteralPath $src -Force
         }
     }
-    Write-Host "Onefile mode: runtime helpers/resources embedded into BattlezoneGoldExtractor.exe"
+    Write-Host "Onefile mode: runtime helpers/resources embedded into BZGoldExtractor.exe"
 }
 
 Write-Host ("Build complete: {0}" -f $bundleRoot)
