@@ -67,7 +67,7 @@ CompanyName: GrizzlyOne95
 OriginalFilename: BZGoldExtractor.exe
 ```
 
-`FileVersion` and `ProductVersion` are derived from the release tag. Non-release CI builds use neutral `0.0.0` Windows version metadata.
+`FileVersion` and `ProductVersion` are derived from the canonical repository version.
 
 ## Standalone Build
 
@@ -91,9 +91,9 @@ For a classic folder bundle instead of one-file mode, set `-OneFile:$false`.
 
 Windows release CI is configured in `.github/workflows/windows-release.yml`.
 
-- Push a tag matching `v*` (for example `v1.1.0`) to build and publish a versioned Windows archive containing `BZGoldExtractor.exe`.
-- Pull requests build the same packaged application with neutral CI version metadata.
-- Manual runs build a downloadable CI artifact without creating a GitHub Release.
+- Pushes to `main` and pull requests build the same packaged application using the canonical `VERSION` value.
+- A `chore(release): vX.Y.Z` commit or matching `v*` tag builds and publishes the versioned Windows archive containing `BZGoldExtractor.exe`.
+- Manual runs build a downloadable artifact without creating a GitHub Release.
 
 ## Known Reverse-Engineering Limits
 
