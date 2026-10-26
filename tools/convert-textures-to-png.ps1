@@ -161,7 +161,7 @@ function Convert-WithTexconv {
 
         $matches = Get-ChildItem -LiteralPath $destDir -File -Filter ($sourceName + "*.png") -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending
-        if ($matches.Count -gt 0) {
+        if (@($matches).Count -gt 0) {
             Move-Item -LiteralPath $matches[0].FullName -Destination $DestPath -Force
             return 0
         }
@@ -203,7 +203,9 @@ if ($UseTexconvFallback -and -not $texconvEnabled) {
 }
 
 $targets = Get-ChildItem -LiteralPath $inputAbs -Recurse -File |
-    Where-Object { $_.Extension.ToLowerInvariant() -in @(".tga", ".dds", ".bmp") }
+    Where-Object { $_.Extension.ToLowerInvariant() -in @(".tga", ".dds", ".bmp", ".png", ".jpg", ".jpeg", ".gif") }
+
+$targets = @($targets)
 
 if ($targets.Count -eq 0) {
     throw "No texture files found under $inputAbs"
@@ -216,7 +218,8 @@ $i = 0
 foreach ($src in $targets) {
     $i++
     $relative = $src.FullName.Substring($inputAbs.Length).TrimStart('\')
-    $pngRelative = [System.IO.Path]::ChangeExtension($relative, ".png")
+    # Retain the input suffix to avoid collisions between e.g. a.dds and a.tga.
+    $pngRelative = $relative + ".png"
     $dst = Join-Path -Path $outputAbs -ChildPath $pngRelative
     $dstDir = Split-Path -Path $dst -Parent
     if (-not (Test-Path -LiteralPath $dstDir)) {
@@ -234,6 +237,15 @@ foreach ($src in $targets) {
             IsDDS      = ""
             FourCC     = ""
             DXGI       = ""
+        })
+        continue
+    }
+
+    if ($src.Extension.ToLowerInvariant() -eq '.png') {
+        Copy-Item -LiteralPath $src.FullName -Destination $dst -Force
+        $results.Add([PSCustomObject]@{
+            SourcePath = $relative; DestPath = $pngRelative; Status = 'OK'; ExitCode = 0
+            Converter = 'copy'; IsDDS = $false; FourCC = ''; DXGI = ''
         })
         continue
     }

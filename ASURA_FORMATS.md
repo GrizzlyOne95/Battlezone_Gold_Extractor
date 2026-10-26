@@ -1,5 +1,7 @@
 # Asura Engine Asset Format Notes (Battlezone Gold Edition)
 
+**Historical research baseline.** Geometry, hierarchy, material hashing and animation assumptions below are superseded by [SCENE_FORMATS.md](SCENE_FORMATS.md). In particular, the render vertex buffer is 20 bytes later than the old offset, HSKN vertices follow a radius float, and HSKN faces are fixed triangle/quad records rather than strips.
+
 Last updated: February 27, 2026
 
 This document is a reverse-engineered, reproducible technical baseline for asset formats observed in this repository's Battlezone Gold dataset. It is based on validated extraction/tool outputs in this workspace, not on official vendor documentation.
@@ -22,6 +24,8 @@ Baseline inputs used for the findings below:
   - `notes/mare_analysis/mare_analysis_summary.json`
 
 All counts in this file are specific to this baseline run and should be treated as "known good for this dataset/date".
+
+**Coverage correction (October 24, 2026):** this historical baseline selected only `.pc*` inputs. It excludes `.asr*` sound/DLC/locale banks and Asura containers with other extensions. Use the new default `AllAsuraHeaders` target set for a full installation dump. The historical two `.dat` MP3 detections used a sync-only heuristic and are not validated audio; current detection requires two valid frames. Geometry-only OBJ export does not recover UVs, materials, skeletons or animation.
 
 ## 2) Container And Wrapper Layer
 

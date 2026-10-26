@@ -41,6 +41,8 @@ class App:
         self.task_textures = tk.BooleanVar(value=True)
         self.task_models = tk.BooleanVar(value=True)
         self.task_audio = tk.BooleanVar(value=False)
+        self.task_resources = tk.BooleanVar(value=True)
+        self.resource_output_root = tk.StringVar(value="work/preview/resources")
 
         self.game_root = tk.StringVar(value="work/Battlezone")
         self.extract_root = tk.StringVar(value="work/extracted/full_all")
@@ -58,19 +60,19 @@ class App:
         self.prefer_texconv = tk.BooleanVar(value=False)
 
         self.model_output_root = tk.StringVar(value="work/preview/model_obj_universal")
-        self.model_backend = tk.StringVar(value="hskn")
+        self.model_backend = tk.StringVar(value="scene")
         self.model_discovery = tk.StringVar(value="headers")
         self.model_keywords = tk.StringVar(value="tank,enemy,drone,cockpit,weapon,turret,bomber,hopper,nemesis,scout,droid,ufo")
         self.model_max_files = tk.StringVar(value="0")
-        self.model_min_triangles = tk.StringVar(value="20")
-        self.hskn_topology_mode = tk.StringVar(value="auto")
+        self.model_min_triangles = tk.StringVar(value="1")
+        self.hskn_topology_mode = tk.StringVar(value="native")
         self.extless_top_modes = tk.StringVar(value="1")
         self.model_edge_prune = tk.StringVar(value="20")
         self.include_environment = tk.BooleanVar(value=False)
 
         self.quickbms_exe = tk.StringVar(value="")
         self.bms_script = tk.StringVar(value="tools/bms/asura.bms")
-        self.target_set = tk.StringVar(value="AllPcVariants")
+        self.target_set = tk.StringVar(value="AllAsuraHeaders")
 
         self.audio_output_root = tk.StringVar(value="work/preview/audio_dump")
         self.audio_report_path = tk.StringVar(value="notes/audio-dump-report.csv")
@@ -289,6 +291,7 @@ class App:
         ttk.Checkbutton(tasks, text="Convert Textures", variable=self.task_textures).pack(side=tk.LEFT, padx=8)
         ttk.Checkbutton(tasks, text="Export Models", variable=self.task_models).pack(side=tk.LEFT, padx=8)
         ttk.Checkbutton(tasks, text="Dump Audio", variable=self.task_audio).pack(side=tk.LEFT, padx=8)
+        ttk.Checkbutton(tasks, text="Shaders / Resources", variable=self.task_resources).pack(side=tk.LEFT, padx=8)
 
         paths = ttk.LabelFrame(parent, text="Core Paths", padding=8)
         paths.pack(fill=tk.X, pady=8)
@@ -298,6 +301,7 @@ class App:
         self._path_row(paths, "Texture Output", self.texture_output_root, is_dir=True)
         self._path_row(paths, "Model Output", self.model_output_root, is_dir=True)
         self._path_row(paths, "Audio Output", self.audio_output_root, is_dir=True)
+        self._path_row(paths, "Resources Output", self.resource_output_root, is_dir=True)
 
         reports = ttk.LabelFrame(parent, text="Reports", padding=8)
         reports.pack(fill=tk.X)
@@ -309,7 +313,7 @@ class App:
         basics.pack(fill=tk.X, pady=8)
         self._combo_row(basics, "Extractor", self.extractor, ["Native", "QuickBMS", "Auto"])
         self._combo_row(basics, "Texture Discovery", self.texture_discovery, ["headers", "extensions"])
-        self._combo_row(basics, "Model Backend", self.model_backend, ["hskn", "extless", "both"])
+        self._combo_row(basics, "Model Backend", self.model_backend, ["scene", "hskn", "extless", "both"])
         self._combo_row(basics, "Model Discovery", self.model_discovery, ["headers", "keywords"])
         self._combo_row(basics, "Audio Discovery", self.audio_discovery, ["headers", "extensions"])
         self._entry_row(basics, "Model Keywords (opt)", self.model_keywords)
@@ -318,7 +322,7 @@ class App:
     def _build_advanced_tab(self, parent: ttk.Frame) -> None:
         extract = ttk.LabelFrame(parent, text="Extraction", padding=8)
         extract.pack(fill=tk.X)
-        self._combo_row(extract, "Target Set", self.target_set, ["AllPcVariants", "Legacy"])
+        self._combo_row(extract, "Target Set", self.target_set, ["AllAsuraHeaders", "AllPcVariants", "Legacy"])
         self._path_row(extract, "QuickBMS EXE", self.quickbms_exe, is_dir=False)
         self._path_row(extract, "BMS Script", self.bms_script, is_dir=False)
 
@@ -423,6 +427,8 @@ class App:
             tasks.append("models")
         if self.task_audio.get():
             tasks.append("audio")
+        if self.task_resources.get():
+            tasks.append("resources")
         if not tasks:
             raise ValueError("Select at least one task.")
 
@@ -431,6 +437,8 @@ class App:
             "run",
             "--tasks",
             ",".join(tasks),
+            "--resource-output-root",
+            self.resource_output_root.get().strip(),
             "--game-root",
             self.game_root.get().strip(),
             "--extract-root",
@@ -455,6 +463,8 @@ class App:
             self.model_output_root.get().strip(),
             "--model-backend",
             self.model_backend.get().strip(),
+            "--model-texture-root",
+            self.texture_output_root.get().strip(),
             "--model-discovery",
             self.model_discovery.get().strip(),
             "--model-keywords",
@@ -632,6 +642,8 @@ class App:
             "task_textures": self.task_textures.get(),
             "task_models": self.task_models.get(),
             "task_audio": self.task_audio.get(),
+            "task_resources": self.task_resources.get(),
+            "resource_output_root": self.resource_output_root.get(),
             "game_root": self.game_root.get(),
             "extract_root": self.extract_root.get(),
             "logs_root": self.logs_root.get(),

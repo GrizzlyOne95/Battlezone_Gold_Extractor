@@ -13,6 +13,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -97,9 +98,52 @@ def run_powershell_file_with_switches(
     run_command(cmd, cwd=cwd)
 
 
+def convert_textures_with_fallback(script, named_args, switch_args):
+    try:
+        run_powershell_file_with_switches(script, named_args, switch_args)
+    except SystemExit:
+        # FFmpeg cannot decode BC7/DXGI 98/99. Pillow's DDS decoder can.
+        if not repair_texture_report(Path(named_args['InputRoot']), Path(named_args['OutputRoot']), Path(named_args['ReportPath'])):
+            raise
+
+
+def repair_texture_report(input_root: Path, output_root: Path, report: Path) -> bool:
+    if not report.exists():
+        return False
+    try:
+        from PIL import Image
+    except ImportError:
+        return False
+    with report.open(encoding='utf-8-sig', newline='') as stream:
+        rows = list(csv.DictReader(stream))
+    def repair(row):
+        if row['Status'] in {'OK', 'Skipped'}:
+            return row
+        try:
+            destination = output_root / row['DestPath']
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with Image.open(input_root / row['SourcePath']) as img:
+                img.load()
+                img.save(destination, format='PNG')
+            row.update(Status='OK', ExitCode='0', Converter='Pillow')
+        except Exception:
+            pass
+        return row
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        rows = list(pool.map(repair, rows))
+    with report.open('w', encoding='utf-8-sig', newline='') as stream:
+        writer = csv.DictWriter(stream, fieldnames=rows[0] if rows else [])
+        writer.writeheader()
+        writer.writerows(rows)
+    failed = sum(row['Status'] not in {'OK', 'Skipped'} for row in rows)
+    print(f'Texture validation after Pillow fallback: total={len(rows)} failed={failed}', flush=True)
+    return bool(rows) and failed == 0
+
+
 def sniff_texture_extension(path: Path) -> str | None:
     try:
-        head = path.read_bytes()[:64]
+        with path.open("rb") as stream:
+            head = stream.read(64)
     except Exception:
         return None
     if len(head) < 4:
@@ -127,7 +171,8 @@ def sniff_texture_extension(path: Path) -> str | None:
 
 def sniff_audio_extension(path: Path) -> str | None:
     try:
-        head = path.read_bytes()[:512]
+        with path.open("rb") as stream:
+            head = stream.read(8192)
     except Exception:
         return None
     if len(head) < 4:
@@ -138,22 +183,47 @@ def sniff_audio_extension(path: Path) -> str | None:
         return ".ogg"
     if head.startswith(b"fLaC"):
         return ".flac"
-    if head.startswith(b"ID3"):
+    if head.startswith(b"ID3") and len(head) >= 10 and head[3] in {2, 3, 4} and all(x < 128 for x in head[6:10]):
         return ".mp3"
-    if len(head) >= 3 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0:
+    # A sync prefix alone also occurs in mesh/chunk data. Require two frames.
+    frame_size = mp3_frame_size(head, 0)
+    if frame_size and mp3_frame_size(head, frame_size):
         return ".mp3"
-    if len(head) >= 12 and head[0:4] == b"RIFF":
-        if b"WAVE" in head:
-            return ".wav"
-        # Unknown RIFF audio-ish payload; preserve as .wem for wwise-style files.
-        return ".wem"
+    if len(head) >= 12 and head[0:4] == b"RIFF" and head[8:12] == b"WAVE":
+        return ".wav"
+    if len(head) >= 12 and head[:4] == b"FORM" and head[8:12] in {b"AIFF", b"AIFC"}:
+        return ".aiff"
     return None
 
 
+def mp3_frame_size(data: bytes, offset: int) -> int | None:
+    if offset + 4 > len(data):
+        return None
+    a, b, c, _ = data[offset:offset + 4]
+    version, layer = (b >> 3) & 3, (b >> 1) & 3
+    bitrate_index, sample_index = c >> 4, (c >> 2) & 3
+    if a != 255 or b & 0xE0 != 0xE0 or version == 1 or layer != 1 or bitrate_index in {0, 15} or sample_index == 3:
+        return None
+    rates = (44100, 48000, 32000)
+    rate = rates[sample_index] // ({3: 1, 2: 2, 0: 4}[version])
+    bitrates = (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320) if version == 3 else (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160)
+    return (144000 if version == 3 else 72000) * bitrates[bitrate_index] // rate + ((c >> 1) & 1)
+
+
 def rel_with_extension(rel: Path, extension: str) -> Path:
-    if rel.suffix:
+    if rel.suffix.lower() == extension.lower():
         return rel
-    return rel.with_suffix(extension)
+    # Keep the original suffix too: a.tga and a.dds must not overwrite each other.
+    return Path(str(rel) + extension)
+
+
+def discover_by_header(root: Path, sniffer):
+    """Bound concurrent small reads; installation dumps contain many tiny chunks."""
+    files = sorted(p for p in root.rglob("*") if p.is_file())
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for path, extension in zip(files, pool.map(sniffer, files)):
+            if extension:
+                yield path, extension
 
 
 def run_extract(args: argparse.Namespace) -> None:
@@ -166,34 +236,21 @@ def run_extract(args: argparse.Namespace) -> None:
         if native_exe:
             native_extractor = native_exe
     quickbms_exe = args.quickbms_exe or resolve_runtime_binary("quickbms_4gb_files.exe") or ""
-    cmd = [
-        powershell_exe(),
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(script),
-        "-GameRoot",
-        str(to_abs_path(args.game_root)),
-        "-ExtractRoot",
-        str(to_abs_path(args.extract_root)),
-        "-LogsRoot",
-        str(to_abs_path(args.logs_root)),
-        "-Extractor",
-        args.extractor,
-        "-PythonExe",
-        args.python_exe,
-        "-NativeExtractor",
-        str(to_abs_path(native_extractor)),
-        "-TargetSet",
-        args.target_set,
-        f"-SkipExisting:{ps_bool(args.skip_existing)}",
-    ]
+    named_args = {
+        "GameRoot": str(to_abs_path(args.game_root)),
+        "ExtractRoot": str(to_abs_path(args.extract_root)),
+        "LogsRoot": str(to_abs_path(args.logs_root)),
+        "Extractor": args.extractor,
+        "PythonExe": args.python_exe,
+        "NativeExtractor": str(to_abs_path(native_extractor)),
+        "TargetSet": args.target_set,
+    }
     if quickbms_exe:
-        cmd.extend(["-QuickBmsExe", str(to_abs_path(quickbms_exe))])
+        named_args["QuickBmsExe"] = str(to_abs_path(quickbms_exe))
     if args.bms_script:
-        cmd.extend(["-BmsScript", str(to_abs_path(args.bms_script))])
-    run_command(cmd)
+        named_args["BmsScript"] = str(to_abs_path(args.bms_script))
+    # Windows PowerShell -File passes explicit switch values as strings.
+    run_powershell_file_with_switches(script, named_args, {"SkipExisting": args.skip_existing})
 
 
 def run_textures(args: argparse.Namespace) -> None:
@@ -216,7 +273,7 @@ def run_textures(args: argparse.Namespace) -> None:
         "UseTexconvFallback": bool(args.use_texconv_fallback),
         "PreferTexconv": bool(args.prefer_texconv),
     }
-    run_powershell_file_with_switches(script_path=script, named_args=named_args, switch_args=switch_args)
+    convert_textures_with_fallback(script, named_args, switch_args)
 
 
 def run_textures_header_discovery(args: argparse.Namespace) -> None:
@@ -230,12 +287,7 @@ def run_textures_header_discovery(args: argparse.Namespace) -> None:
     skipped = 0
     rows: list[dict[str, str]] = []
 
-    for src in in_root.rglob("*"):
-        if not src.is_file():
-            continue
-        tex_ext = sniff_texture_extension(src)
-        if not tex_ext:
-            continue
+    for src, tex_ext in discover_by_header(in_root, sniff_texture_extension):
         rel = src.relative_to(in_root)
         out_rel = rel_with_extension(rel, tex_ext)
         dst = stage_root / out_rel
@@ -287,7 +339,7 @@ def run_textures_header_discovery(args: argparse.Namespace) -> None:
         "UseTexconvFallback": bool(args.use_texconv_fallback),
         "PreferTexconv": bool(args.prefer_texconv),
     }
-    run_powershell_file_with_switches(script_path=script, named_args=named_args, switch_args=switch_args)
+    convert_textures_with_fallback(script, named_args, switch_args)
 
 
 def run_models(args: argparse.Namespace) -> None:
@@ -295,6 +347,16 @@ def run_models(args: argparse.Namespace) -> None:
     in_root = str(to_abs_path(args.extract_root))
     out_root = to_abs_path(args.model_output_root)
     out_root.mkdir(parents=True, exist_ok=True)
+    if args.model_backend == 'scene':
+        exporter = resolve_runtime_binary('export-asura-scenes.exe') if IS_FROZEN else None
+        if IS_FROZEN and not exporter:
+            raise SystemExit('Frozen runtime missing export-asura-scenes.exe')
+        cmd = [exporter] if exporter else [py, str(TOOLS_DIR / 'export-asura-scenes.py')]
+        texture_root = args.model_texture_root or getattr(args, 'texture_output_root', 'work/preview/png_all_texconv')
+        cmd.extend(['--input-root', in_root, '--texture-root', str(to_abs_path(texture_root)), '--output-root', str(out_root)])
+        run_command(cmd)
+        return
+    print('Legacy OBJ backend: geometry previews only; use --model-backend scene to preserve hierarchy, UVs, materials and animation.')
     discovery_mode = args.model_discovery
     model_keywords = args.model_keywords if discovery_mode == "keywords" else ""
 
@@ -479,12 +541,7 @@ def run_audio_header_discovery(args: argparse.Namespace) -> AudioDumpResult:
     skipped = 0
     rows: list[dict[str, str]] = []
 
-    for src in in_root.rglob("*"):
-        if not src.is_file():
-            continue
-        aud_ext = sniff_audio_extension(src)
-        if not aud_ext:
-            continue
+    for src, aud_ext in discover_by_header(in_root, sniff_audio_extension):
 
         rel = src.relative_to(in_root)
         out_rel = rel_with_extension(rel, aud_ext)
@@ -534,7 +591,7 @@ def add_extract_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--native-extractor", default="tools/extract-asura-native.py")
     parser.add_argument("--quickbms-exe", default="")
     parser.add_argument("--bms-script", default="tools/bms/asura.bms")
-    parser.add_argument("--target-set", choices=("Legacy", "AllPcVariants"), default="AllPcVariants")
+    parser.add_argument("--target-set", choices=("Legacy", "AllPcVariants", "AllAsuraHeaders"), default="AllAsuraHeaders")
 
 
 def add_texture_args(parser: argparse.ArgumentParser) -> None:
@@ -562,15 +619,31 @@ def add_texture_args(parser: argparse.ArgumentParser) -> None:
 
 def add_model_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model-output-root", default="work/preview/model_obj_universal")
-    parser.add_argument("--model-backend", choices=("hskn", "extless", "both"), default="hskn")
+    parser.add_argument("--model-backend", choices=("scene", "hskn", "extless", "both"), default="scene")
+    parser.add_argument("--model-texture-root", default=None, help="PNG texture root used by structured glTF scenes; run inherits --texture-output-root")
     parser.add_argument("--model-discovery", choices=("headers", "keywords"), default="headers")
     parser.add_argument("--model-keywords", default=DEFAULT_KEYWORDS)
     parser.add_argument("--model-max-files", type=int, default=0, help="0 means no cap (export all discovered files).")
-    parser.add_argument("--model-min-triangles", type=int, default=20)
-    parser.add_argument("--hskn-topology-mode", default="auto")
+    parser.add_argument("--model-min-triangles", type=int, default=1)
+    parser.add_argument("--hskn-topology-mode", default="native")
     parser.add_argument("--extless-top-modes", type=int, default=1)
     parser.add_argument("--model-edge-prune-median-multiplier", type=float, default=20.0)
     parser.add_argument("--include-environment", action="store_true", default=False)
+
+
+def run_resources(args: argparse.Namespace) -> None:
+    exporter = resolve_runtime_binary('export-asura-resources.exe') if IS_FROZEN else None
+    if IS_FROZEN and not exporter:
+        raise SystemExit('Frozen runtime missing export-asura-resources.exe')
+    cmd = [exporter] if exporter else [args.python_exe, str(TOOLS_DIR / 'export-asura-resources.py')]
+    cmd.extend(['--input-root', str(to_abs_path(args.extract_root)), '--output-root', str(to_abs_path(args.resource_output_root))])
+    game_root = to_abs_path(args.game_root)
+    if game_root.is_dir():cmd.extend(['--game-root', str(game_root)])
+    run_command(cmd)
+
+
+def add_resource_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument('--resource-output-root', default='work/preview/resources', help='Native shaders, reflection, material tables, volume textures and effects index')
 
 
 def add_audio_args(parser: argparse.ArgumentParser) -> None:
@@ -592,7 +665,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_shared_io_args(p_textures)
     add_texture_args(p_textures)
 
-    p_models = sub.add_parser("models", help="Export model OBJ previews")
+    p_models = sub.add_parser("models", help="Export structured model scenes")
     add_shared_io_args(p_models)
     add_model_args(p_models)
 
@@ -600,16 +673,21 @@ def build_parser() -> argparse.ArgumentParser:
     add_shared_io_args(p_audio)
     add_audio_args(p_audio)
 
+    p_resources = sub.add_parser('resources', help='Recover native shaders, material parameters and effect dependencies')
+    add_shared_io_args(p_resources)
+    add_resource_args(p_resources)
+
     p_run = sub.add_parser("run", help="Run multiple tasks in sequence")
     add_shared_io_args(p_run)
     add_extract_args(p_run)
     add_texture_args(p_run)
     add_model_args(p_run)
     add_audio_args(p_run)
+    add_resource_args(p_run)
     p_run.add_argument(
         "--tasks",
-        default="extract,textures,models,audio",
-        help="Comma-separated tasks from: extract,textures,models,audio",
+        default="extract,textures,models,resources,audio",
+        help="Comma-separated tasks from: extract,textures,models,resources,audio",
     )
     p_runtime = sub.add_parser("runtime", help="Show resolved runtime tool paths")
     add_shared_io_args(p_runtime)
@@ -617,7 +695,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def parse_task_list(raw: str) -> list[str]:
-    valid = {"extract", "textures", "models", "audio"}
+    valid = {"extract", "textures", "models", "resources", "audio"}
     out = [x.strip().lower() for x in raw.split(",") if x.strip()]
     for x in out:
         if x not in valid:
@@ -641,6 +719,9 @@ def main() -> int:
     if args.command == "audio":
         run_audio(args)
         return 0
+    if args.command == 'resources':
+        run_resources(args)
+        return 0
     if args.command == "run":
         tasks = parse_task_list(args.tasks)
         for task in tasks:
@@ -653,6 +734,8 @@ def main() -> int:
                 run_models(args)
             elif task == "audio":
                 run_audio(args)
+            elif task == 'resources':
+                run_resources(args)
         return 0
     if args.command == "runtime":
         rows = {

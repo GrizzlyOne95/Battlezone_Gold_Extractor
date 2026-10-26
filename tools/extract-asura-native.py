@@ -101,14 +101,22 @@ def write_entry(
     offset: int,
     size: int,
 ) -> bool:
-    if size <= 0:
+    if size < 0:
         return False
     if offset < 0 or offset + size > len(data):
         return False
     out_rel = safe_rel_path(rel_name)
     out_path = output_dir / out_rel
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(data[offset : offset + size])
+    content = data[offset : offset + size]
+    if out_path.exists() and out_path.read_bytes() != content:
+        # Archives can repeat a resource name. Preserve every distinct payload.
+        original = out_path
+        index = 2
+        while out_path.exists() and out_path.read_bytes() != content:
+            out_path = original.with_name(f"{original.stem}__duplicate_{index}{original.suffix}")
+            index += 1
+    out_path.write_bytes(content)
     return True
 
 
@@ -221,20 +229,22 @@ def unwrap_asurazbb(data: bytes) -> tuple[bytes, int]:
         if zsize <= 0:
             break
         if cursor + zsize > len(data):
-            break
+            raise ParseError("Truncated AsuraZbb compressed block.")
         comp = data[cursor : cursor + zsize]
         cursor += zsize
 
         dec = try_zlib_decompress(comp)
         if dec is None:
             raise ParseError("Failed to decompress AsuraZbb chunk.")
+        if usize and len(dec) != usize:
+            raise ParseError("AsuraZbb block decompressed size mismatch.")
         out.extend(dec)
 
         if full_size > 0 and len(out) >= full_size:
             break
 
-    if full_size > 0 and len(out) > full_size:
-        out = out[:full_size]
+    if full_size > 0 and len(out) != full_size:
+        raise ParseError("AsuraZbb total decompressed size mismatch.")
     if not out:
         raise ParseError("No data produced from AsuraZbb chunks.")
 
@@ -292,13 +302,17 @@ def extract_archive_payload(
     chunk_index = 0
 
     while chunk_offset + 16 <= len(payload):
+        # DLC/header containers use a zero-filled terminator after the chunk stream.
+        if payload[chunk_offset:chunk_offset + 16] == bytes(16) and not any(payload[chunk_offset:]):
+            chunk_offset = len(payload)
+            break
         chunk_raw = payload[chunk_offset : chunk_offset + 4]
         chunk_name = decode_chunk_name(chunk_raw)
         chunk_size = read_u32(payload, chunk_offset + 4, endian)
         chunk_ver = read_u32(payload, chunk_offset + 8, endian)
         _dummy = read_u32(payload, chunk_offset + 12, endian)
 
-        if chunk_size <= 16:
+        if chunk_size < 16:
             summary.warnings.append(f"Chunk {chunk_index}: invalid size {chunk_size}, stopping parse.")
             break
         chunk_end = chunk_offset + chunk_size
@@ -318,11 +332,11 @@ def extract_archive_payload(
                 _rdummy = read_u32(payload, cursor + 4, endian)
                 size = read_u32(payload, cursor + 8, endian)
                 cursor += 12
-                name, _ = read_padded_name(payload, cursor, chunk_end)
+                name, name_end = read_padded_name(payload, cursor, chunk_end)
                 if not name:
                     name = f"RSCF_{chunk_index:04d}.bin"
                 data_off = chunk_end - size
-                if write_entry(payload, output_dir, name, data_off, size):
+                if data_off >= name_end and write_entry(payload, output_dir, name, data_off, size):
                     summary.extracted_files += 1
                 else:
                     summary.warnings.append(
@@ -399,6 +413,9 @@ def extract_archive_payload(
         chunk_index += 1
         chunk_offset = chunk_end
 
+    if chunk_offset < len(payload) and any(payload[chunk_offset:]) and not summary.warnings:
+        summary.warnings.append(f"Unparsed nonzero trailing data at 0x{chunk_offset:X}.")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Native extractor for Asura archives.")
@@ -432,6 +449,7 @@ def main() -> int:
         out_json = json.dumps(summary.__dict__, indent=2)
         print(out_json)
         if args.summary_json:
+            args.summary_json.parent.mkdir(parents=True, exist_ok=True)
             args.summary_json.write_text(out_json, encoding="utf-8")
         return EXIT_OK
 

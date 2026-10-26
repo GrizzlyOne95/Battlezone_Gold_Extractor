@@ -372,7 +372,7 @@ def build_triangles_for_topology(
     strip_adaptive_local_multiplier: float | None = None,
     strip_adaptive_aspect_max: float | None = None,
 ) -> np.ndarray:
-    if topology == "strip":
+    if topology in {"native", "strip"}:
         return parsed.triangles
     if topology == "strip_adaptive":
         return strip_to_triangles_adaptive(
@@ -442,15 +442,15 @@ def parse_hskn(path: Path, input_root: Path) -> tuple[ParsedHSKN | None, str | N
     if sentinel < 0x20:
         return None, "bad_sentinel_offset"
 
-    vertex_count = struct.unpack_from("<H", blob, sentinel - 0x16)[0]
-    strip_index_hint = struct.unpack_from("<H", blob, sentinel - 0x12)[0]
+    vertex_count = struct.unpack_from("<I", blob, sentinel - 0x16)[0]
+    strip_index_hint = struct.unpack_from("<I", blob, sentinel - 0x12)[0]
     if vertex_count <= 0 or vertex_count > 200_000:
         return None, "bad_vertex_count"
 
     bounds_start = sentinel + 0x06
-    vertex_start = sentinel + 0x1E
+    vertex_start = sentinel + 0x22
     vertex_end = vertex_start + vertex_count * 12
-    index_start = vertex_end + 4
+    index_start = vertex_end
     if index_start + 2 > len(blob):
         return None, "bad_offsets"
     if bounds_start + 24 > len(blob):
@@ -470,24 +470,17 @@ def parse_hskn(path: Path, input_root: Path) -> tuple[ParsedHSKN | None, str | N
     if not np.isfinite(verts).all():
         return None, "non_finite_vertices"
 
-    # Indices are a strip stream with 0xFFFF restart; stream ends when values leave range.
-    idx_vals: list[int] = []
-    for off in range(index_start, len(blob) - 1, 2):
-        v = struct.unpack_from("<H", blob, off)[0]
-        if v == 0xFFFF or v < vertex_count:
-            idx_vals.append(v)
-        else:
-            break
-    if len(idx_vals) < 3:
-        return None, "too_few_indices"
-
-    indices = np.array(idx_vals, dtype=np.int32)
-    triangles = strip_to_triangles(indices)
+    # Each native face has four u16 slots. A triangle has 0xFFFF in slot 3.
+    if strip_index_hint < 1 or index_start + strip_index_hint * 8 > len(blob):
+        return None, "bad_polygon_table"
+    faces = np.frombuffer(blob, dtype='<u2', offset=index_start, count=strip_index_hint * 4).reshape(-1, 4).astype(np.int32)
+    if np.any(faces[:, :3] >= vertex_count) or np.any((faces[:, 3] != 65535) & (faces[:, 3] >= vertex_count)):
+        return None, "bad_polygon_index"
+    indices = faces.reshape(-1)
+    triangles = np.vstack([faces[:, :3], faces[faces[:, 3] != 65535][:, [0, 2, 3]]])
     if len(triangles) == 0:
         return None, "no_triangles"
-    record_stride = 0
-    if strip_index_hint > 0 and len(indices) % strip_index_hint == 0:
-        record_stride = len(indices) // strip_index_hint
+    record_stride = 4
 
     rel_path = str(path.relative_to(input_root))
     archive = path.parent.parent.name
@@ -645,6 +638,7 @@ def main() -> int:
         "--topology-mode",
         choices=[
             "auto",
+            "native",
             "strip",
             "strip_adaptive",
             "list",
@@ -667,7 +661,7 @@ def main() -> int:
             "rec5col4_fan",
             "all",
         ],
-        default="auto",
+        default="native",
     )
     parser.add_argument("--scale", type=float, default=1.0)
     parser.add_argument("--no-center", action="store_true")
@@ -734,7 +728,9 @@ def main() -> int:
             "rec5col4_fan",
         ]
         supported_rec5 = parsed.record_stride == 5
-        if args.topology_mode == "all":
+        if args.topology_mode in {"native", "auto"}:
+            topo_candidates.append(("native", parsed.triangles))
+        elif args.topology_mode == "all":
             for top in base_tops:
                 topo_candidates.append(
                     (

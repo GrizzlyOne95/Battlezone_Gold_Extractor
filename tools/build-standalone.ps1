@@ -159,12 +159,16 @@ Invoke-PyInstallerBuild -EntryScript (Join-Path $toolsRoot "bzg-extractor.py") -
 Invoke-PyInstallerBuild -EntryScript (Join-Path $toolsRoot "extract-asura-native.py") -Name "extract-asura-native" -DistPath $distAbs -BuildPath $buildAbs -WindowedBuild:$false -OneFileBuild
 Invoke-PyInstallerBuild -EntryScript (Join-Path $toolsRoot "export-hskn-obj-candidates.py") -Name "export-hskn-obj-candidates" -DistPath $distAbs -BuildPath $buildAbs -WindowedBuild:$false -OneFileBuild
 Invoke-PyInstallerBuild -EntryScript (Join-Path $toolsRoot "export-model-obj-candidates.py") -Name "export-model-obj-candidates" -DistPath $distAbs -BuildPath $buildAbs -WindowedBuild:$false -OneFileBuild
+Invoke-PyInstallerBuild -EntryScript (Join-Path $toolsRoot "export-asura-scenes.py") -Name "export-asura-scenes" -DistPath $distAbs -BuildPath $buildAbs -WindowedBuild:$false -OneFileBuild
+Invoke-PyInstallerBuild -EntryScript (Join-Path $toolsRoot "export-asura-resources.py") -Name "export-asura-resources" -DistPath $distAbs -BuildPath $buildAbs -WindowedBuild:$false -OneFileBuild
 
 $helperExes = @(
     "bzg-extractor.exe",
     "extract-asura-native.exe",
     "export-hskn-obj-candidates.exe",
-    "export-model-obj-candidates.exe"
+    "export-model-obj-candidates.exe",
+    "export-asura-scenes.exe",
+    "export-asura-resources.exe"
 )
 
 $uiExtraArgs = @()

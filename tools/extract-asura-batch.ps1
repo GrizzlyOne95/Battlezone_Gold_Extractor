@@ -28,8 +28,8 @@ param(
     [switch]$SkipExisting = $true,
 
     [Parameter(Mandatory = $false)]
-    [ValidateSet("Legacy", "AllPcVariants")]
-    [string]$TargetSet = "AllPcVariants"
+    [ValidateSet("Legacy", "AllPcVariants", "AllAsuraHeaders")]
+    [string]$TargetSet = "AllAsuraHeaders"
 )
 
 Set-StrictMode -Version Latest
@@ -87,6 +87,18 @@ function Get-ExtractionTargets {
         "AllPcVariants" {
             $targets += Get-ChildItem -LiteralPath $Root -Recurse -File |
                 Where-Object { $_.Name -match "\.pc($|_)" }
+        }
+        "AllAsuraHeaders" {
+            $targets += Get-ChildItem -LiteralPath $Root -Recurse -File | Where-Object {
+                # Also include named archive candidates so unsupported wrappers are reported.
+                if ($_.Name -match '\.(pc|asr)($|_)') { return $true }
+                $stream = [System.IO.File]::OpenRead($_.FullName)
+                try {
+                    $head = New-Object byte[] 8
+                    $count = $stream.Read($head, 0, 8)
+                    return ($count -eq 8 -and [System.Text.Encoding]::ASCII.GetString($head).StartsWith('Asura'))
+                } finally { $stream.Dispose() }
+            }
         }
     }
 
@@ -207,6 +219,18 @@ foreach ($archive in $targets) {
     $outDir = Join-Path -Path $extractRootAbs -ChildPath $safeName
     $logFile = Join-Path -Path $logsRootAbs -ChildPath ($safeName + ".log")
 
+    if ($archive.Name -match '\.pc_entheader$' -and $archive.Length -lt 4096) {
+        $pointer = [System.IO.File]::ReadAllText($archive.FullName).Trim([char]0).Trim()
+        $pointerPath = Join-Path $gameRoot $pointer
+        if ($pointer -match '^envs[\\/][^\r\n]+\.pc_entdata$' -and (Test-Path -LiteralPath $pointerPath)) {
+            $results.Add([PSCustomObject]@{
+                RelativeArchive = $relative; OutputDir = $outDir; Extractor = $Extractor
+                Status = 'Pointer'; ExitCode = 0; OutputFiles = 0; LogFile = $logFile
+            })
+            continue
+        }
+    }
+
     if (Test-AsuraPlaceholder -File $archive) {
         Write-Host ("[{0}/{1}] PLACEHOLDER {2}" -f $index, $targets.Count, $relative)
         $results.Add([PSCustomObject]@{
@@ -276,6 +300,8 @@ foreach ($archive in $targets) {
             else {
                 $status = "Empty"
             }
+            $nativeSummary = ($cmdOutput -join "`n") | ConvertFrom-Json
+            if (@($nativeSummary.warnings).Count -gt 0) { $status = 'Warning' }
         }
         elseif ($exit -eq 10) {
             $status = "Unsupported"
@@ -317,10 +343,13 @@ $placeholders = @($results | Where-Object { $_.Status -eq "Placeholder" }).Count
 $unsupported = @($results | Where-Object { $_.Status -eq "Unsupported" }).Count
 $empty = @($results | Where-Object { $_.Status -eq "Empty" }).Count
 $failed = @($results | Where-Object { $_.Status -eq "Failed" }).Count
+$warnings = @($results | Where-Object { $_.Status -eq "Warning" }).Count
+$pointers = @($results | Where-Object { $_.Status -eq "Pointer" }).Count
 
 Write-Host ("Done. OK={0}, Skipped={1}, Placeholder={2}, Unsupported={3}, Empty={4}, Failed={5}" -f $ok, $skipped, $placeholders, $unsupported, $empty, $failed)
 Write-Host ("Report: {0}" -f $reportPath)
+Write-Host ("Pointers={0}, Warnings={1}" -f $pointers, $warnings)
 
-if ($failed -gt 0) {
+if ($failed -gt 0 -or $unsupported -gt 0 -or $warnings -gt 0) {
     exit 2
 }

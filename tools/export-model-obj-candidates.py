@@ -4,12 +4,11 @@
 This exporter targets the repeated model container layout observed in extracted assets:
 - Header: dynamic size based on part count
 - Vertex records: fixed 40-byte stride
-- Gap: 20 bytes
+- Quantization transform: 24 bytes before the vertex buffer; no trailing gap
 - Index buffer: trailing u16 triangle list
 
-Because vertex semantics are still partially reverse engineered, the script emits one or more
-position decode variants and scores each variant. This makes it practical to open candidates in
-Blender and quickly identify the most usable geometry.
+Native quantized positions are the default. Older decode modes remain explicit research options.
+Use the scene backend for UVs, materials, hierarchy and animation.
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ import csv
 import json
 import math
 import re
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -69,6 +69,8 @@ class ParsedModel:
     vertices_u32: np.ndarray
     vertices_u16: np.ndarray
     indices_u16: np.ndarray
+    quantization_scale: np.ndarray
+    quantization_offset: np.ndarray
 
 
 @dataclass
@@ -169,9 +171,9 @@ def parse_model_file(path: Path, input_root: Path) -> tuple[ParsedModel | None, 
     if tri_count != index_count // 3:
         return None, "tri_count_mismatch"
 
-    header_size = 0x10 + part_count * 0x18 + 0x08
+    header_size = 44 + part_count * 24
     index_offset = len(blob) - (index_count * 2)
-    expected_index_offset = header_size + vertex_count * 40 + 20
+    expected_index_offset = header_size + vertex_count * 40
 
     if index_offset != expected_index_offset:
         return None, "layout_mismatch"
@@ -210,6 +212,8 @@ def parse_model_file(path: Path, input_root: Path) -> tuple[ParsedModel | None, 
         vertices_u32=vertices_u32,
         vertices_u16=vertices_u16,
         indices_u16=indices_u16,
+        quantization_scale=np.array(struct.unpack_from('<3f', blob, 20 + part_count * 24)),
+        quantization_offset=np.array(struct.unpack_from('<3f', blob, 32 + part_count * 24)),
     )
     return model, None
 
@@ -231,7 +235,12 @@ def decode_s16_10_11_12(model: ParsedModel) -> np.ndarray:
     return model.vertices_u16[:, [10, 11, 12]].astype(np.int16).astype(np.float64)
 
 
+def decode_native(model: ParsedModel) -> np.ndarray:
+    return model.vertices_u16[:, :3].astype(np.float64) / 65536 * model.quantization_scale + model.quantization_offset
+
+
 DECODE_MODES: dict[str, Callable[[ParsedModel], np.ndarray]] = {
+    "native": decode_native,
     "packed_257": decode_packed_257,
     "packed_258": decode_packed_258,
     "packed_259": decode_packed_259,
@@ -518,14 +527,10 @@ def main() -> int:
     parser.add_argument("--discovery-mode", choices=["keywords", "headers"], default="keywords")
     parser.add_argument(
         "--modes",
-        default=(
-            "auto_part_s16,packed_257,packed_258,packed_259,"
-            "s16_10_11_12,s16_4_10_12,s16_5_10_12,s16_4_10_11,s16_4_11_12,"
-            "s16_10_11_15,s16_10_11_17,s16_10_12_19,s16_11_12_19,s16_5_12_16,s16_4_12_16"
-        ),
+        default="native",
     )
     parser.add_argument("--top-modes", type=int, default=2)
-    parser.add_argument("--scale", type=float, default=0.001)
+    parser.add_argument("--scale", type=float, default=1.0)
     parser.add_argument("--no-center", action="store_true")
     parser.add_argument("--edge-prune-median-multiplier", type=float, default=None)
     parser.add_argument("--include-environment", action="store_true")
